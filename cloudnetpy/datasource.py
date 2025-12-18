@@ -58,6 +58,11 @@ class DataSource:
         self.time: npt.NDArray = self._init_time()
         self.altitude = self._init_altitude()
         self.height = self._init_height()
+        self.height_agl = (
+            self.height - self.altitude
+            if self.height is not None and self.altitude is not None
+            else None
+        )
         self.data: dict = {}
         self._is_radar = radar
 
@@ -134,17 +139,6 @@ class DataSource:
         if var.units == "km":
             alt *= 1000
         elif var.units not in ("m", "meters"):
-            msg = f"Unexpected unit: {var.units}"
-            raise ValueError(msg)
-        return alt
-
-    @staticmethod
-    def to_km(var: netCDF4.Variable) -> npt.NDArray:
-        """Converts m to km."""
-        alt = var[:]
-        if var.units == "m":
-            alt /= 1000
-        elif var.units != "km":
             msg = f"Unexpected unit: {var.units}"
             raise ValueError(msg)
         return alt

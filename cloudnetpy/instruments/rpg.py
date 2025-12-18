@@ -110,6 +110,7 @@ def create_one_day_data_record(rpg_objects: RpgObjects) -> dict:
     if "range" in rpg_header:
         rpg_header["range"] = rpg_objects[0].header["range"]
     should_be_constant = [
+        "customer_name",
         "model_number",
         "dual_polarization",
         "antenna_separation",
@@ -118,14 +119,18 @@ def create_one_day_data_record(rpg_objects: RpgObjects) -> dict:
         "half_power_beam_width",
         "radar_frequency",
     ]
+    to_be_removed = ["customer_name"]
     for key in should_be_constant:
         if key not in rpg_header:
             continue
-        values = rpg_header[key]
-        if not np.allclose(values[0], values[1:]):
-            msg = f"Value for '{key}' is not constant"
+        unique_values = np.unique(rpg_header[key])
+        if len(unique_values) > 1:
+            msg = f"More than one value for {key} found: {unique_values}"
             raise ValueError(msg)
-        rpg_header[key] = values[0]
+        if key in to_be_removed:
+            del rpg_header[key]
+        else:
+            rpg_header[key] = unique_values[0]
 
     rpg_raw_data = _mask_invalid_data(rpg_raw_data)
     return {**rpg_header, **rpg_raw_data}
@@ -213,18 +218,29 @@ def _interpolate_to_common_height(objects: list[Fmcw94Bin]) -> list[Fmcw94Bin]:
     if all(np.array_equal(range_arrays[0], r) for r in range_arrays[1:]):
         return objects
     # Use range with the highest range gate for interpolation
-    target_height = max(range_arrays, key=lambda r: r[-1])
+    target_range = max(range_arrays, key=lambda r: r[-1])
     for obj in objects:
         src_range = obj.header["range"]
-        if np.array_equal(src_range, target_height):
+        if np.array_equal(src_range, target_range):
             continue
         for key, arr in obj.data.items():
             if arr.ndim == 2 and arr.shape[1] == src_range.size:
                 obj.data[key] = utils.interpolate_2D_along_y(
-                    src_range, arr, target_height
+                    src_range, arr, target_range
                 )
-        obj.header["range"] = target_height
+        _interpolate_chirp_start_indices(obj, target_range)
+        obj.header["range"] = target_range
     return objects
+
+
+def _interpolate_chirp_start_indices(obj: Fmcw94Bin, target_range: np.ndarray) -> None:
+    range_orig = obj.header["range"]
+    vals = range_orig[obj.header["chirp_start_indices"]]
+    indices = np.abs(target_range[:, None] - vals).argmin(axis=0)
+    # Chirp start indices should always start from 0:
+    if indices[0] != 0:
+        indices[0] = 0
+    obj.header["chirp_start_indices"] = indices
 
 
 def _pad_chirp_related_fields(objects: list[Fmcw94Bin]) -> list[Fmcw94Bin]:

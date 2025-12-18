@@ -3,7 +3,7 @@
 import re
 import textwrap
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any
 
@@ -67,8 +67,8 @@ class PlotParameters:
     footer_text: str | None = None
     plot_meta: PlotMeta | None = None
     raise_on_empty: bool = False
-    minor_ticks: bool = False
-    plot_above_ground: bool = False
+    minor_ticks: bool = True
+    plot_above_ground: bool = True
 
 
 class Dimensions:
@@ -152,6 +152,14 @@ class FigureData:
             verticalalignment="bottom",
         )
 
+    def datetime(self) -> datetime:
+        return datetime(
+            int(self.file.year),
+            int(self.file.month),
+            int(self.file.day),
+            tzinfo=timezone.utc,
+        )
+
     def _get_subtitle_text(self) -> str:
         measurement_date = date(
             int(self.file.year), int(self.file.month), int(self.file.day)
@@ -181,8 +189,17 @@ class FigureData:
         return valid_variables, variable_indices
 
     def _get_time(self) -> ndarray:
+        variable_names = [f.name for f in self.variables]
         if self.file_type == "cpr-simulation":
             x_data = self.file.variables["along_track_sat"][:] * con.M_TO_KM
+        elif (
+            self.file_type == "cpr-validation"
+            and ("echo_cpr" in variable_names or "v_cpr" in variable_names)
+        ) or (
+            self.file_type == "cpr-tc-validation"
+            and ("target_classification_cpr" in variable_names)
+        ):
+            x_data = self.file.variables["time_cpr"][:]
         else:
             x_data = self.file.variables["time"][:]
         return x_data
@@ -244,9 +261,24 @@ class SubPlot:
         self.file_type = file_type
         self.plot_meta = self._read_plot_meta()
 
-    def set_xax(self) -> None:
+    def set_xax(self, figure_data: FigureData) -> None:
         if self.file_type == "cpr-simulation":
             self.ax.set_xlim(0, EARTHCARE_MAX_X)  # km
+            return
+        if (
+            self.file_type == "cpr-validation"
+            and self.variable.name != "cloud_top_height"
+        ) or self.file_type == "cpr-tc-validation":
+            time = np.array(figure_data.time, dtype=float)
+            self.ax.set_xlim(min(time), max(time))
+            self.ax.set_xlabel("Time (UTC)", fontsize=13)
+            ticks = np.linspace(min(time), max(time), 8)[1:-1]
+            tick_dts = [figure_data.datetime() + timedelta(hours=h) for h in ticks]
+            tick_labels = [dt.strftime("%H:%M:%S") for dt in tick_dts]
+            self.ax.set_xticks(ticks)
+            self.ax.set_xticklabels(tick_labels, fontsize=12)
+            self.ax.tick_params(axis="both", which="major", labelsize=11)
+        if self.file_type in ("cpr-validation", "cpr-tc-validation"):
             return
         resolution = 4
         x_tick_labels = [
@@ -314,6 +346,8 @@ class SubPlot:
             )
 
     def set_xlabel(self) -> None:
+        if self.file_type == "cpr-validation":
+            return
         label = (
             "Distance along track (km)"
             if self.file_type == "cpr-simulation"
@@ -493,6 +527,94 @@ class Plot:
 
 
 class Plot2D(Plot):
+    def plot_ec_scene(self, figure_data: FigureData) -> None:
+        variables = figure_data.file.variables
+        lat = variables["latitude_msi"][:]
+        lon = variables["longitude_msi"][:]
+        data = variables["cloud_top_height"][:] / 1000
+        valid_ind = ~data.mask
+
+        # Gridded cloud top height
+        if np.sum(valid_ind) > 10:
+            nbins = 200
+            lon_bins = np.linspace(lon.min(), lon.max(), nbins)
+            lat_bins = np.linspace(lat.min(), lat.max(), nbins)
+            lon = lon[valid_ind]
+            lat = lat[valid_ind]
+            data = data[valid_ind].data
+            grid, _, _ = np.histogram2d(
+                lon, lat, bins=[lon_bins, lat_bins], weights=data
+            )
+            counts, _, _ = np.histogram2d(lon, lat, bins=[lon_bins, lat_bins])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                grid_mean = np.where(counts > 0, grid / counts, np.nan)
+            vmin = np.nanpercentile(grid_mean, 2)
+            vmax = np.nanpercentile(grid_mean, 98)
+            im = self._ax.pcolorfast(
+                lon_bins,
+                lat_bins,
+                grid_mean.T,
+                cmap="Blues_r",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            cbar = self._init_colorbar(im)
+            cbar.set_label("km", fontsize=13)
+
+        # CPR ground track
+        lat_cpr = variables["latitude_cpr"][:]
+        lon_cpr = variables["longitude_cpr"][:]
+        self._ax.plot(
+            lon_cpr[::4],
+            lat_cpr[::4],
+            markeredgecolor="grey",
+            markerfacecolor="lightgreen",
+            linewidth=0,
+            marker=".",
+            markersize=10,
+            label="CPR ground track",
+        )
+        # Ground station
+        site_lat = np.mean(variables["latitude"][:])
+        site_lon = np.mean(variables["longitude"][:])
+        self._ax.plot(
+            site_lon,
+            site_lat,
+            marker="+",
+            color="red",
+            markersize=10,
+            label="Ground station",
+        )
+
+        # Zoom to region
+        lat_range = 1
+        lon_range = lat_range / np.cos(np.deg2rad(site_lat))
+        self._ax.set_xlim(site_lon - lon_range, site_lon + lon_range)
+        self._ax.set_ylim(site_lat - lat_range, site_lat + lat_range)
+
+        # Scale bar
+        scale_km = 10
+        km_per_deg_lon = 111.32 * np.cos(np.deg2rad(site_lat))
+        deg_lon_10km = scale_km / km_per_deg_lon
+        x0 = site_lon - lon_range * 0.9
+        y0 = site_lat - lat_range * 0.9
+        self._ax.plot(
+            [x0, x0 + deg_lon_10km], [y0, y0], color="k", lw=2, solid_capstyle="butt"
+        )
+        self._ax.text(
+            x0 + deg_lon_10km / 2,
+            y0 + lat_range * 0.02,
+            f"{scale_km} km",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+
+        legend = self._ax.legend(loc="upper right")
+        legend.get_frame().set_edgecolor("white")
+        self._ax.set_xlabel("Longitude°", fontsize=13)
+        self._ax.set_ylabel("Latitude°", fontsize=13)
+
     def plot(self, figure_data: FigureData) -> None:
         self._convert_units()
         if self._plot_meta.mask_zeros:
@@ -910,11 +1032,6 @@ class Plot1D(Plot):
                 )
 
     @staticmethod
-    def _get_line_width(time: ndarray) -> float:
-        line_width = np.median(np.diff(time)) * 1000
-        return min(max(line_width, 0.25), 0.9)
-
-    @staticmethod
     def _get_bad_zenith_profiles(figure_data: FigureData) -> ndarray:
         zenith_limit = 5
         valid_pointing_status = 0
@@ -1006,6 +1123,11 @@ def generate_figure(
 
                 if variable.name in ("tb", "irt") and ind is not None:
                     Plot1D(subplot).plot_tb(figure_data, ind)
+                elif (
+                    figure_data.file_type == "cpr-validation"
+                    and variable.name == "cloud_top_height"
+                ):
+                    Plot2D(subplot).plot_ec_scene(figure_data)
                 elif variable.ndim == 1:
                     Plot1D(subplot).plot(figure_data)
                 elif variable.name in ("number_concentration", "fall_velocity"):
@@ -1015,7 +1137,7 @@ def generate_figure(
                     Plot2D(subplot).plot(figure_data)
                     subplot.set_yax(y_limits=(0, figure_data.options.max_y))
 
-                subplot.set_xax()
+                subplot.set_xax(figure_data)
 
                 if options.title:
                     subplot.add_title(ind)

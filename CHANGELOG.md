@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.86.23 – 2025-12-11
+
+- Fix xticklabels in cpr plots
+
+## 1.86.22 – 2025-12-10
+
+- Fix Galati weather station reader and add visibility
+- Skip invalid lines in Kenttärova weather station files
+
+## 1.86.21 – 2025-12-09
+
+- Add support for Cluj weather station
+
+## 1.86.20 – 2025-12-08
+
+- Rework Radiometrics reader
+
+## 1.86.19 – 2025-12-04
+
+- Fix chirp start index interpolation
+
+## 1.86.18 – 2025-12-04
+
+- Add snow to CPR classification plot
+
+## 1.86.17 – 2025-11-20
+
+- Add cpr-tc-validation plots
+
+## 1.86.16 – 2025-11-20
+
+- Always store azimuth and zenith offsets as float
+
+## 1.86.15 – 2025-11-19
+
+- Fix compression in L2 products
+
+## 1.86.14 – 2025-11-18
+
+- Add support for Kenttärova Parsivel
+- Remove dead code
+
+## 1.86.13 – 2025-11-12
+
+- Add cpr-validation plots
+
+## 1.86.12 – 2025-11-06
+
+- Fix height calculations.
+- Fix dimensions in IWC and drizzle product
+- Use `np.bool_` instead of `np.bool`
+- Test with Python 3.14
+
+## 1.86.11 – 2025-11-04
+
+- Check customer name matches in RPG radar files
+- Fix chirp start indices interpolation
+
 ## 1.86.10 – 2025-10-30
 
 - Allow small differences in RPG header values
